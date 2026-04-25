@@ -1,18 +1,36 @@
 const express = require('express');
 const app = express();
 const PORT = process.env.PORT || 3000;
-const ZAP_WEBHOOK = process.env.ZAP_10B_WEBHOOK || 'https://hooks.zapier.com/hooks/catch/25149853/ujis74a/';
+
+// Webhook URLs per zap
+const WEBHOOKS = {
+  '9b':  process.env.ZAP_9B_WEBHOOK  || 'https://hooks.zapier.com/hooks/catch/25149853/u75wiuk/',
+  '10b': process.env.ZAP_10B_WEBHOOK || 'https://hooks.zapier.com/hooks/catch/25149853/ujis74a/',
+  '1b':  process.env.ZAP_1B_WEBHOOK  || 'https://hooks.zapier.com/hooks/catch/25149853/uvbkrhj/'
+};
 
 app.get('/approve', async (req, res) => {
-  const { approval_id, sender_email, sender_name, subject, draft } = req.query;
-  
+  const { approval_id, sender_email, sender_name, subject, draft, thread_id, message_id, zap } = req.query;
+
   if (!approval_id || !sender_email) {
     return res.status(400).send('<h2>Invalid link</h2>');
   }
 
+  // Route to correct webhook based on zap parameter
+  const zapKey = zap || '10b';
+  const webhook = WEBHOOKS[zapKey] || WEBHOOKS['10b'];
+
   try {
-    const params = new URLSearchParams({ approval_id, sender_email, sender_name: sender_name||'', subject: subject||'', draft: draft||'' });
-    await fetch(ZAP_WEBHOOK + '?' + params);
+    const params = new URLSearchParams({
+      approval_id: approval_id || '',
+      sender_email: sender_email || '',
+      sender_name: sender_name || '',
+      subject: subject || '',
+      draft: draft || '',
+      thread_id: thread_id || '',
+      message_id: message_id || ''
+    });
+    await fetch(webhook + '?' + params);
   } catch(e) {
     console.error('Webhook error:', e);
   }
@@ -51,7 +69,7 @@ app.get('/approve', async (req, res) => {
     <div class="bod">
       <div class="ic">&#10003;</div>
       <h2>Response Approved</h2>
-      <p>Your response has been sent to the inquirer.</p>
+      <p>Your response has been sent to the client.</p>
       <div class="detail">
         <strong>Sent to:</strong> ${sender_name||sender_email} &lt;${sender_email}&gt;<br>
         <strong>Subject:</strong> ${subject||'Your inquiry'}
