@@ -100,7 +100,7 @@ app.get('/edit', (req, res) => {
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Edit Response - The Poultry Doc</title>
-  <script src="https://cdn.tiny.cloud/1/no-api-key/tinymce/6/tinymce.min.js" referrerpolicy="origin"></script>
+  <script src="https://cdn.tiny.cloud/1/0fdodg5iffga60i75lha5mayclwv66lr80cb9101ubf17iwv/tinymce/6/tinymce.min.js" referrerpolicy="origin"></script>
   <style>
     *{box-sizing:border-box}
     body{margin:0;background:#f0f4f4;font-family:Georgia,serif;padding:24px}
