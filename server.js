@@ -59,7 +59,7 @@ const CONFIRMATION_HTML = (sender_name, sender_email, subject) => `<!DOCTYPE htm
 
 // Approve and send as-is
 app.get('/approve', async (req, res) => {
-  const { approval_id, sender_email, sender_name, subject, draft, thread_id, message_id, zap } = req.query;
+  const { approval_id, sender_email, sender_name, subject, zap } = req.query;
 
   if (!approval_id || !sender_email) {
     return res.status(400).send('<h2>Invalid link</h2>');
@@ -69,15 +69,8 @@ app.get('/approve', async (req, res) => {
   const webhook = WEBHOOKS[zapKey] || WEBHOOKS['10b'];
 
   try {
-    const params = new URLSearchParams({
-      approval_id: approval_id || '',
-      sender_email: sender_email || '',
-      sender_name: sender_name || '',
-      subject: subject || '',
-      draft: draft || '',
-      thread_id: thread_id || '',
-      message_id: message_id || ''
-    });
+    // Forward ALL querystring params so Zapier receives every field
+    const params = new URLSearchParams(req.query);
     await fetch(webhook + '?' + params);
   } catch(e) {
     console.error('Webhook error:', e);
@@ -186,6 +179,8 @@ app.get('/edit', (req, res) => {
 
 // Handle edited form submission
 app.post('/edit/send', async (req, res) => {
+  console.log('[edit/send] body keys:', Object.keys(req.body));
+  console.log('[edit/send] draft (first 200):', String(req.body.draft || '').slice(0, 200));
   const { approval_id, sender_email, sender_name, subject, draft, thread_id, message_id, zap } = req.body;
 
   if (!approval_id || !sender_email) {
@@ -196,15 +191,8 @@ app.post('/edit/send', async (req, res) => {
   const webhook = WEBHOOKS[zapKey] || WEBHOOKS['10b'];
 
   try {
-    const params = new URLSearchParams({
-      approval_id: approval_id || '',
-      sender_email: sender_email || '',
-      sender_name: sender_name || '',
-      subject: subject || '',
-      draft: draft || '',
-      thread_id: thread_id || '',
-      message_id: message_id || ''
-    });
+    // Forward ALL body params so Zapier receives every field
+    const params = new URLSearchParams(req.body);
     await fetch(webhook + '?' + params);
   } catch(e) {
     console.error('Webhook error:', e);
