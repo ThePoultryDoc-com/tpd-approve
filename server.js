@@ -57,20 +57,82 @@ const CONFIRMATION_HTML = (sender_name, sender_email, subject) => `<!DOCTYPE htm
 </body>
 </html>`;
 
-// Approve and send as-is
-app.get('/approve', async (req, res) => {
-  const { approval_id, sender_email, sender_name, subject, zap } = req.query;
+// Approve -- show confirmation page (prevents email scanner double-fire)
+app.get('/approve', (req, res) => {
+  const { approval_id, sender_email, sender_name, subject } = req.query;
 
   if (!approval_id || !sender_email) {
     return res.status(400).send('<h2>Invalid link</h2>');
+  }
+
+  // Build hidden inputs from all querystring params
+  const hiddenInputs = Object.entries(req.query)
+    .map(([k, v]) => `<input type="hidden" name="${k}" value="${String(v).replace(/"/g, '&quot;')}">`)
+    .join('\n    ');
+
+  res.send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Confirm Approval - The Poultry Doc</title>
+  <style>
+    body{margin:0;background:#f0f4f4;font-family:Georgia,serif;display:flex;align-items:center;justify-content:center;min-height:100vh}
+    .card{background:#fff;border-radius:10px;box-shadow:0 2px 12px rgba(0,0,0,.1);max-width:480px;width:90%;overflow:hidden}
+    .hdr{background:#01696F;padding:28px;text-align:center}
+    .hdr img{max-width:180px;display:block;margin:0 auto 10px}
+    .hdr p{color:rgba(255,255,255,.85);margin:0;font-size:13px}
+    .div{background:#F5C842;height:4px}
+    .bod{padding:36px;text-align:center}
+    h2{color:#01696F;margin:0 0 10px;font-size:21px}
+    p{color:#555;font-size:14px;line-height:1.6;margin:0 0 20px}
+    .detail{background:#f0f7f7;border-radius:6px;padding:16px;margin-bottom:24px;text-align:left;font-size:14px;color:#444}
+    .detail strong{color:#01696F}
+    .btn{background:#01696F;color:#fff;border:none;padding:14px 32px;border-radius:6px;font-size:15px;font-weight:700;cursor:pointer;font-family:Georgia,serif;width:100%}
+    .btn:hover{background:#015a5f}
+    .ftr{background:#01696F;padding:14px;text-align:center}
+    .ftr p{color:rgba(255,255,255,.7);font-size:12px;margin:0}
+    .ftr a{color:#F5C842;text-decoration:none}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="hdr">
+      <img src="https://thepoultrydoc.wpenginepowered.com/wp-content/uploads/2026/04/TPD-new-logo-lg-ctp-1.png" alt="The Poultry Doc">
+      <p>Veterinary Consultation for Backyard Flocks</p>
+    </div>
+    <div class="div"></div>
+    <div class="bod">
+      <h2>Confirm and Send</h2>
+      <p>Click the button below to approve and send this response to the client.</p>
+      <div class="detail">
+        <strong>To:</strong> ${sender_name || sender_email} &lt;${sender_email}&gt;<br>
+        <strong>Subject:</strong> ${subject || 'Your inquiry'}
+      </div>
+      <form method="POST" action="/approve/confirm">
+        ${hiddenInputs}
+        <button type="submit" class="btn">Confirm and Send to Client</button>
+      </form>
+    </div>
+    <div class="ftr"><p>The Poultry Doc &mdash; <a href="https://www.thepoultrydoc.com">www.thepoultrydoc.com</a></p></div>
+  </div>
+</body>
+</html>`);
+});
+
+// Approve confirm -- fires webhook after vet clicks confirm button
+app.post('/approve/confirm', async (req, res) => {
+  const { approval_id, sender_email, sender_name, subject, zap } = req.body;
+
+  if (!approval_id || !sender_email) {
+    return res.status(400).send('<h2>Invalid submission</h2>');
   }
 
   const zapKey = zap || '10b';
   const webhook = WEBHOOKS[zapKey] || WEBHOOKS['10b'];
 
   try {
-    // Forward ALL querystring params so Zapier receives every field
-    const params = new URLSearchParams(req.query);
+    const params = new URLSearchParams(req.body);
     await fetch(webhook + '?' + params);
   } catch(e) {
     console.error('Webhook error:', e);
