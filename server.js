@@ -12,6 +12,53 @@ const WEBHOOKS = {
   '1b':  process.env.ZAP_1B_WEBHOOK  || 'https://hooks.zapier.com/hooks/catch/25149853/uvbkrhj/'
 };
 
+function escapeHtml(value) {
+  return String(value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+// Convert plain text draft to HTML for TinyMCE
+// Also converts bare URLs into centered TPD-styled buttons
+function draftToHtml(draft) {
+  if (!draft) return '';
+
+  // If it already looks like HTML, return as-is
+  if (/<[a-z][\s\S]*>/i.test(draft)) return draft;
+
+  // URL regex
+  const urlRegex = /(https?:\/\/[^\s<>"]+)/g;
+
+  // Split into paragraphs on double newlines, single newlines become <br>
+  const paragraphs = draft.split(/\n{2,}/);
+
+  return paragraphs.map(para => {
+    const trimmed = para.trim();
+    if (!trimmed) return '';
+
+    // Check if the entire paragraph is just a URL
+    if (/^https?:\/\/[^\s]+$/.test(trimmed)) {
+      return `<p style="text-align:center;margin:20px 0;">` +
+        `<a href="${trimmed}" target="_blank" ` +
+        `style="display:inline-block;background:#01696F;color:#ffffff;` +
+        `padding:12px 28px;border-radius:6px;text-decoration:none;` +
+        `font-family:Georgia,serif;font-size:15px;font-weight:700;">` +
+        `View Document</a></p>`;
+    }
+
+    // Otherwise wrap in <p> and linkify any URLs inline
+    const linked = trimmed
+      .replace(/\n/g, '<br>')
+      .replace(urlRegex, (url) =>
+        `<a href="${url}" target="_blank" style="color:#01696F;">${url}</a>`
+      );
+    return `<p style="margin:0 0 16px;">${linked}</p>`;
+  }).filter(Boolean).join('\n');
+}
+
 const CONFIRMATION_HTML = (sender_name, sender_email, subject) => `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -48,14 +95,18 @@ const CONFIRMATION_HTML = (sender_name, sender_email, subject) => `<!DOCTYPE htm
       <h2>Response Sent</h2>
       <p>Your response has been sent to the client.</p>
       <div class="detail">
-        <strong>Sent to:</strong> ${sender_name || sender_email} &lt;${sender_email}&gt;<br>
-        <strong>Subject:</strong> ${subject || 'Your inquiry'}
+        <strong>Sent to:</strong> ${escapeHtml(sender_name || sender_email)} &lt;${escapeHtml(sender_email)}&gt;<br>
+        <strong>Subject:</strong> ${escapeHtml(subject || '')}
       </div>
     </div>
     <div class="ftr"><p>The Poultry Doc &mdash; <a href="https://www.thepoultrydoc.com">www.thepoultrydoc.com</a></p></div>
   </div>
 </body>
 </html>`;
+
+app.get('/', (req, res) => {
+  res.send('TPD Approve is running.');
+});
 
 // Approve -- show confirmation page (prevents email scanner double-fire)
 app.get('/approve', (req, res) => {
@@ -65,9 +116,8 @@ app.get('/approve', (req, res) => {
     return res.status(400).send('<h2>Invalid link</h2>');
   }
 
-  // Build hidden inputs from all querystring params
   const hiddenInputs = Object.entries(req.query)
-    .map(([k, v]) => `<input type="hidden" name="${k}" value="${String(v).replace(/"/g, '&quot;')}">`)
+    .map(([k, v]) => `<input type="hidden" name="${k}" value="${escapeHtml(v)}">`)
     .join('\n    ');
 
   res.send(`<!DOCTYPE html>
@@ -106,8 +156,8 @@ app.get('/approve', (req, res) => {
       <h2>Confirm and Send</h2>
       <p>Click the button below to approve and send this response to the client.</p>
       <div class="detail">
-        <strong>To:</strong> ${sender_name || sender_email} &lt;${sender_email}&gt;<br>
-        <strong>Subject:</strong> ${subject || 'Your inquiry'}
+        <strong>To:</strong> ${escapeHtml(sender_name || sender_email)} &lt;${escapeHtml(sender_email)}&gt;<br>
+        <strong>Subject:</strong> ${escapeHtml(subject || 'Your inquiry')}
       </div>
       <form method="POST" action="/approve/confirm">
         ${hiddenInputs}
@@ -141,13 +191,24 @@ app.post('/approve/confirm', async (req, res) => {
   res.send(CONFIRMATION_HTML(sender_name, sender_email, subject));
 });
 
-// Edit page -- show editable draft
+// Edit page -- show editable draft with TinyMCE
 app.get('/edit', (req, res) => {
   const { approval_id, sender_email, sender_name, subject, draft, thread_id, message_id, zap } = req.query;
 
   if (!approval_id || !sender_email) {
     return res.status(400).send('<h2>Invalid link</h2>');
   }
+
+  // Convert plain text draft to HTML (handles URLs as centered buttons)
+  const htmlDraft = draftToHtml(draft);
+
+  // Pass ALL original querystring params to hidden form fields
+  const allParams = Object.entries(req.query)
+    .filter(([k]) => k !== 'draft') // draft comes from TinyMCE
+    .map(([k, v]) => `<input type="hidden" name="${k}" value="${escapeHtml(v)}">`)
+    .join('\n    ');
+
+  const cancelUrl = '/approve?' + new URLSearchParams(req.query).toString();
 
   res.send(`<!DOCTYPE html>
 <html lang="en">
@@ -187,50 +248,65 @@ app.get('/edit', (req, res) => {
       <div class="div"></div>
       <div class="body">
         <div class="meta">
-          <strong>To:</strong> ${sender_name || sender_email} &lt;${sender_email}&gt;<br>
-          <strong>Subject:</strong> ${subject || ''}
+          <strong>To:</strong> ${escapeHtml(sender_name || sender_email)} &lt;${escapeHtml(sender_email)}&gt;<br>
+          <strong>Subject:</strong> ${escapeHtml(subject || '')}
         </div>
 
         <label>Edit Response</label>
         <div class="editor-wrap">
-          <textarea id="draft-editor" name="draft">${draft ? draft.replace(/</g, '&lt;').replace(/>/g, '&gt;') : ''}</textarea>
+          <textarea id="draft-editor"></textarea>
         </div>
 
         <div class="actions">
-          <button class="btn-send" onclick="submitEdit()">Send Edited Response</button>
-          <a class="btn-cancel" href="/approve?approval_id=${encodeURIComponent(approval_id || '')}&sender_email=${encodeURIComponent(sender_email || '')}&sender_name=${encodeURIComponent(sender_name || '')}&subject=${encodeURIComponent(subject || '')}&draft=${encodeURIComponent(draft || '')}&thread_id=${encodeURIComponent(thread_id || '')}&message_id=${encodeURIComponent(message_id || '')}&zap=${encodeURIComponent(zap || '10b')}">Send Original Without Edits</a>
+          <button type="button" class="btn-send" onclick="submitEdit()">Send Edited Response</button>
+          <a class="btn-cancel" href="${escapeHtml(cancelUrl)}">Send Original Without Edits</a>
         </div>
-        <p class="note">Changes are saved when you click Send. The client will receive the edited version.</p>
+        <p class="note">Changes are sent when you click Send. The client will receive the edited version.</p>
       </div>
     </div>
   </div>
 
   <form id="edit-form" method="POST" action="/edit/send" style="display:none">
-    <input type="hidden" name="approval_id" value="${approval_id || ''}">
-    <input type="hidden" name="sender_email" value="${sender_email || ''}">
-    <input type="hidden" name="sender_name" value="${sender_name || ''}">
-    <input type="hidden" name="subject" value="${subject || ''}">
-    <input type="hidden" name="thread_id" value="${thread_id || ''}">
-    <input type="hidden" name="message_id" value="${message_id || ''}">
-    <input type="hidden" name="zap" value="${zap || '10b'}">
+    ${allParams}
     <input type="hidden" name="draft" id="form-draft">
   </form>
 
   <script>
-    // Initialize TinyMCE
+    // HTML content loaded from server (plain text already converted to HTML)
+    const initialContent = ${JSON.stringify(htmlDraft)};
+
     tinymce.init({
       selector: '#draft-editor',
-      height: 500,
+      height: 520,
       menubar: false,
-      plugins: ['lists', 'link', 'image', 'code'],
-      toolbar: 'undo redo | bold italic underline | forecolor backcolor | alignleft aligncenter alignright | bullist numlist | link | code',
-      content_style: 'body { font-family: Georgia, serif; font-size: 15px; color: #333; line-height: 1.7; }',
+      plugins: ['lists', 'link', 'code', 'autolink'],
+      toolbar: 'undo redo | bold italic underline | forecolor | alignleft aligncenter alignright | bullist numlist | link | code',
+      content_style: 'body { font-family: Georgia, serif; font-size: 15px; color: #333; line-height: 1.7; padding: 12px; }',
       skin: 'oxide',
-      content_css: 'default'
+      content_css: 'default',
+      // Auto-convert pasted bare URLs into centered buttons
+      paste_preprocess: function(plugin, args) {
+        const urlRegex = /^(https?:\\/\\/[^\\s]+)$/;
+        const trimmed = args.content.trim();
+        if (urlRegex.test(trimmed)) {
+          args.content = '<p style="text-align:center;margin:20px 0;">' +
+            '<a href="' + trimmed + '" target="_blank" ' +
+            'style="display:inline-block;background:#01696F;color:#ffffff;' +
+            'padding:12px 28px;border-radius:6px;text-decoration:none;' +
+            'font-family:Georgia,serif;font-size:15px;font-weight:700;">' +
+            'View Document</a></p>';
+        }
+      },
+      setup: function(editor) {
+        editor.on('init', function() {
+          editor.setContent(initialContent);
+        });
+      }
     });
 
     function submitEdit() {
-      const content = tinymce.get('draft-editor').getContent();
+      const editor = tinymce.get('draft-editor');
+      const content = editor ? editor.getContent() : '';
       document.getElementById('form-draft').value = content;
       document.getElementById('edit-form').submit();
     }
@@ -241,9 +317,7 @@ app.get('/edit', (req, res) => {
 
 // Handle edited form submission
 app.post('/edit/send', async (req, res) => {
-  console.log('[edit/send] body keys:', Object.keys(req.body));
-  console.log('[edit/send] draft (first 200):', String(req.body.draft || '').slice(0, 200));
-  const { approval_id, sender_email, sender_name, subject, draft, thread_id, message_id, zap } = req.body;
+  const { approval_id, sender_email, sender_name, subject, zap } = req.body;
 
   if (!approval_id || !sender_email) {
     return res.status(400).send('<h2>Invalid submission</h2>');
@@ -253,7 +327,6 @@ app.post('/edit/send', async (req, res) => {
   const webhook = WEBHOOKS[zapKey] || WEBHOOKS['10b'];
 
   try {
-    // Forward ALL body params so Zapier receives every field
     const params = new URLSearchParams(req.body);
     await fetch(webhook + '?' + params);
   } catch(e) {
