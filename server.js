@@ -32,8 +32,22 @@ function draftToHtml(draft) {
   // URL regex
   const urlRegex = /(https?:\/\/[^\s<>"]+)/g;
 
-  // Split into paragraphs on double newlines, single newlines become <br>
-  const paragraphs = draft.split(/\n{2,}/);
+  // Normalize: if no newlines exist, split on sentence-ending punctuation
+  // followed by a space and a capital letter (paragraph boundaries)
+  let normalized = draft;
+  if (!normalized.includes('\n')) {
+    // Insert double newline before greeting-like splits and paragraph starters
+    normalized = normalized
+      // Split before URLs that appear mid-sentence after a space
+      .replace(/ (https?:\/\/)/g, '\n\n$1')
+      // Split at sentence end followed by space + capital (new sentence/paragraph)
+      .replace(/([.!?])\s+([A-Z])/g, '$1\n\n$2')
+      // Split before closing salutations
+      .replace(/\s+(Warm regards|Best regards|Sincerely|Thank you,|Best,|Regards,)/g, '\n\n$1');
+  }
+
+  // Split into paragraphs on double newlines
+  const paragraphs = normalized.split(/\n{2,}/);
 
   return paragraphs.map(para => {
     const trimmed = para.trim();
@@ -49,7 +63,7 @@ function draftToHtml(draft) {
         `View Document</a></p>`;
     }
 
-    // Otherwise wrap in <p> and linkify any URLs inline
+    // Otherwise wrap in <p> and linkify any inline URLs
     const linked = trimmed
       .replace(/\n/g, '<br>')
       .replace(urlRegex, (url) =>
