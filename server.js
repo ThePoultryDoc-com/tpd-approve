@@ -26,14 +26,6 @@ function escapeHtml(value) {
 function draftToHtml(draft) {
   if (!draft) return '';
 
-  // Strip any bold/italic markdown or HTML inline formatting so the salutation
-  // (or any other text) is never rendered as bold/italic in the edit/send flow.
-  draft = draft
-    .replace(/<\/?(strong|b|em|i)(\s[^>]*)?>/gi, '')
-    .replace(/\*\*(.*?)\*\*/g, '$1')
-    .replace(/__(.*?)__/g, '$1')
-    .replace(/(^|\s)\*(?!\s)([^*\n]+?)\*(?!\w)/g, '$1$2')
-    .replace(/(^|\s)_(?!\s)([^_\n]+?)_(?!\w)/g, '$1$2');
   // If it already looks like HTML, return as-is
   if (/<[a-z][\s\S]*>/i.test(draft)) return draft;
 
