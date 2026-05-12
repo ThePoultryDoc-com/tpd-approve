@@ -238,7 +238,7 @@ app.post('/approve/confirm', async (req, res) => {
   const webhook = WEBHOOKS[zapKey] || WEBHOOKS['10b'];
 
   try {
-    const body = { ...req.body }; if (body.draft) body.draft = draftToHtml(body.draft); const params = new URLSearchParams(body);
+    const params = new URLSearchParams(req.body);
     await fetch(webhook + '?' + params);
   } catch(e) {
     console.error('Webhook error:', e);
