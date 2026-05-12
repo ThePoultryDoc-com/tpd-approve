@@ -26,6 +26,13 @@ function escapeHtml(value) {
 function draftToHtml(draft) {
   if (!draft) return '';
 
+  // Strip bold formatting (HTML tags and markdown) so the salutation is never bolded.
+  // Conservative: only targets <strong>/<b> and **...** / __...__ -- leaves italics alone.
+  draft = draft
+    .replace(/<\/?(strong|b)(\s[^>]*)?>/gi, '')
+    .replace(/\*\*([\s\S]*?)\*\*/g, '$1')
+    .replace(/__([\s\S]*?)__/g, '$1');
+
   // If it already looks like HTML, return as-is
   if (/<[a-z][\s\S]*>/i.test(draft)) return draft;
 
