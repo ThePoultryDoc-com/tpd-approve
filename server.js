@@ -62,6 +62,9 @@ function draftToHtml(draft) {
   // Normalize: if no newlines exist, split on sentence-ending punctuation
   // followed by a space and a capital letter (paragraph boundaries)
   let normalized = draft;
+    // Always isolate bare URLs onto their own paragraph so they render as buttons
+  normalized = normalized.replace(/[^\S\n]+(https?:\/\/[^\s]+)/g, '\n\n$1');
+  normalized = normalized.replace(/(https?:\/\/[^\s]+)[^\S\n]+(\S)/g, '$1\n\n$2');
   if (!normalized.includes('\n')) {
     // Insert double newline before greeting-like splits and paragraph starters
     normalized = normalized
