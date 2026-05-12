@@ -21,6 +21,21 @@ function escapeHtml(value) {
     .replace(/'/g, '&#39;');
 }
 
+// Derive a short, action-oriented button label from a URL by inspecting host + path keywords.
+// Used as a fallback when the draft does not provide an explicit [Label](URL) markdown link.
+function labelForUrl(url) {
+  const u = String(url || '').toLowerCase();
+  if (/book|appointment|consult|schedule|calendly|cal\.com|acuity|calendar\.google/.test(u)) return 'Book a Consultation';
+  if (/checkout|stripe|invoice|pay(?!\w)|payment/.test(u)) return 'Complete Payment';
+  if (/founding-feather|membership|subscribe|signup|newsletter/.test(u)) return 'Join / Subscribe';
+  if (/intake|questionnaire|form|survey|typeform|google\.com\/forms/.test(u)) return 'Complete Form';
+  if (/zoom\.us|meet\.google|teams\.microsoft|webex/.test(u)) return 'Join Meeting';
+  if (/youtu|vimeo|video/.test(u)) return 'Watch Video';
+  if (/\.pdf(\?|$)|drive\.google|docs\.google|onedrive|dropbox/.test(u)) return 'View Document';
+  if (/thepoultrydoc\.com\/?$/.test(u)) return 'Visit The Poultry Doc';
+  return 'Open Link';
+}
+
 // Convert plain text draft to HTML for TinyMCE
 // Also converts bare URLs into centered TPD-styled buttons
 function draftToHtml(draft) {
@@ -32,6 +47,12 @@ function draftToHtml(draft) {
     .replace(/<\/?(strong|b|a)(\s[^>]*)?>/gi, '')
     .replace(/\*\*([\s\S]*?)\*\*/g, '$1')
     .replace(/__([\s\S]*?)__/g, '$1');
+
+    // Markdown action links: [Label](https://url) -> isolate onto their own paragraph
+    // using a BTN::: marker that the paragraph renderer below detects to build a styled button.
+    draft = draft.replace(/\[([^\]\n]+?)\]\((https?:\/\/[^\s)]+)\)/g, function(_m, label, url) {
+          return '\n\nBTN:::' + label.trim() + ':::' + url.trim() + '\n\n';
+        });
 
   // If it already looks like HTML, return as-is
   if (/<\s*(p|div|ul|ol|li|table|tr|td|blockquote|h[1-6])(\s|>|\/)/i.test(draft)) return draft;
@@ -59,6 +80,19 @@ function draftToHtml(draft) {
     const trimmed = para.trim();
     if (!trimmed) return '';
 
+    // Check for explicit BTN:::Label:::URL marker (from [Label](URL) markdown)
+    const btnMatch = trimmed.match(/^BTN:::(.+?):::(https?:\/\/\S+)$/);
+    if (btnMatch) {
+      const btnLabel = btnMatch[1].trim();
+      const btnUrl = btnMatch[2].trim();
+      return `<p style="text-align:center;margin:20px 0;">
+        <a href="${btnUrl}" target="_blank"
+           style="display:inline-block;background:#01696F;color:#ffffff;
+                  padding:12px 28px;border-radius:6px;text-decoration:none;
+                  font-family:Georgia,serif;font-size:15px;font-weight:700;">
+          ${btnLabel}</a></p>`;
+    }
+
     // Check if the entire paragraph is just a URL
     if (/^https?:\/\/[^\s]+$/.test(trimmed)) {
       return `<p style="text-align:center;margin:20px 0;">` +
@@ -66,9 +100,8 @@ function draftToHtml(draft) {
         `style="display:inline-block;background:#01696F;color:#ffffff;` +
         `padding:12px 28px;border-radius:6px;text-decoration:none;` +
         `font-family:Georgia,serif;font-size:15px;font-weight:700;">` +
-        `View Document</a></p>`;
+        `${labelForUrl(trimmed)}</a></p>`;
     }
-
     // Otherwise wrap in <p> and linkify any inline URLs
     const linked = trimmed
       .replace(/\n/g, '<br>')
