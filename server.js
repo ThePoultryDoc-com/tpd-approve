@@ -166,13 +166,15 @@ app.get('/', (req, res) => {
 
 // Approve -- show confirmation page (prevents email scanner double-fire)
 app.get('/approve', (req, res) => {
-  const { approval_id, sender_email, sender_name, subject } = req.query;
+  const { approval_id, sender_email, sender_name, subject, cc, bcc } = req.query;
 
   if (!approval_id || !sender_email) {
     return res.status(400).send('<h2>Invalid link</h2>');
   }
 
+  // Hidden inputs for everything EXCEPT cc/bcc (those become visible text inputs)
   const hiddenInputs = Object.entries(req.query)
+    .filter(([k]) => k !== 'cc' && k !== 'bcc')
     .map(([k, v]) => `<input type="hidden" name="${k}" value="${escapeHtml(v)}">`)
     .join('\n    ');
 
@@ -183,8 +185,8 @@ app.get('/approve', (req, res) => {
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Confirm Approval - The Poultry Doc</title>
   <style>
-    body{margin:0;background:#f0f4f4;font-family:Georgia,serif;display:flex;align-items:center;justify-content:center;min-height:100vh}
-    .card{background:#fff;border-radius:10px;box-shadow:0 2px 12px rgba(0,0,0,.1);max-width:480px;width:90%;overflow:hidden}
+    body{margin:0;background:#f0f4f4;font-family:Georgia,serif;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:24px}
+    .card{background:#fff;border-radius:10px;box-shadow:0 2px 12px rgba(0,0,0,.1);max-width:480px;width:100%;overflow:hidden}
     .hdr{background:#01696F;padding:28px;text-align:center}
     .hdr img{max-width:180px;display:block;margin:0 auto 10px}
     .hdr p{color:rgba(255,255,255,.85);margin:0;font-size:13px}
@@ -192,9 +194,14 @@ app.get('/approve', (req, res) => {
     .bod{padding:36px;text-align:center}
     h2{color:#01696F;margin:0 0 10px;font-size:21px}
     p{color:#555;font-size:14px;line-height:1.6;margin:0 0 20px}
-    .detail{background:#f0f7f7;border-radius:6px;padding:16px;margin-bottom:24px;text-align:left;font-size:14px;color:#444}
+    .detail{background:#f0f7f7;border-radius:6px;padding:16px;margin-bottom:20px;text-align:left;font-size:14px;color:#444}
     .detail strong{color:#01696F}
-    .btn{background:#01696F;color:#fff;border:none;padding:14px 32px;border-radius:6px;font-size:15px;font-weight:700;cursor:pointer;font-family:Georgia,serif;width:100%}
+    .field{text-align:left;margin-bottom:14px}
+    .field label{display:block;font-size:12px;font-weight:700;color:#01696F;text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;font-family:Arial,sans-serif}
+    .field input{width:100%;box-sizing:border-box;padding:10px 12px;border:1px solid #d4ede8;border-radius:6px;font-family:Georgia,serif;font-size:14px;color:#333}
+    .field input:focus{outline:none;border-color:#01696F}
+    .hint{font-size:12px;color:#888;margin-top:4px;font-family:Arial,sans-serif}
+    .btn{background:#01696F;color:#fff;border:none;padding:14px 32px;border-radius:6px;font-size:15px;font-weight:700;cursor:pointer;font-family:Georgia,serif;width:100%;margin-top:8px}
     .btn:hover{background:#015a5f}
     .ftr{background:#01696F;padding:14px;text-align:center}
     .ftr p{color:rgba(255,255,255,.7);font-size:12px;margin:0}
@@ -217,6 +224,16 @@ app.get('/approve', (req, res) => {
       </div>
       <form method="POST" action="/approve/confirm">
         ${hiddenInputs}
+        <div class="field">
+          <label for="cc">CC (optional)</label>
+          <input type="text" id="cc" name="cc" value="${escapeHtml(cc || '')}" placeholder="name@example.com, other@example.com" autocomplete="off">
+          <div class="hint">Comma-separated. Recipients see these addresses.</div>
+        </div>
+        <div class="field">
+          <label for="bcc">BCC (optional)</label>
+          <input type="text" id="bcc" name="bcc" value="${escapeHtml(bcc || '')}" placeholder="name@example.com, other@example.com" autocomplete="off">
+          <div class="hint">Comma-separated. Hidden from recipients.</div>
+        </div>
         <button type="submit" class="btn">Confirm and Send to Client</button>
       </form>
     </div>
@@ -249,7 +266,7 @@ app.post('/approve/confirm', async (req, res) => {
 
 // Edit page -- show editable draft with TinyMCE
 app.get('/edit', (req, res) => {
-  const { approval_id, sender_email, sender_name, subject, draft, thread_id, message_id, zap } = req.query;
+  const { approval_id, sender_email, sender_name, subject, draft, thread_id, message_id, zap, cc, bcc } = req.query;
 
   if (!approval_id || !sender_email) {
     return res.status(400).send('<h2>Invalid link</h2>');
@@ -258,9 +275,10 @@ app.get('/edit', (req, res) => {
   // Convert plain text draft to HTML (handles URLs as centered buttons)
   const htmlDraft = draftToHtml(draft);
 
-  // Pass ALL original querystring params to hidden form fields
+  // Pass all original querystring params to hidden form fields EXCEPT draft, cc, bcc
+  // (draft comes from TinyMCE; cc/bcc become visible text inputs)
   const allParams = Object.entries(req.query)
-    .filter(([k]) => k !== 'draft') // draft comes from TinyMCE
+    .filter(([k]) => k !== 'draft' && k !== 'cc' && k !== 'bcc')
     .map(([k, v]) => `<input type="hidden" name="${k}" value="${escapeHtml(v)}">`)
     .join('\n    ');
 
@@ -287,7 +305,12 @@ app.get('/edit', (req, res) => {
     .meta strong{color:#01696F}
     label{display:block;font-size:13px;font-weight:700;color:#01696F;text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;font-family:Arial,sans-serif}
     .editor-wrap{border:1px solid #d4ede8;border-radius:6px;overflow:hidden;margin-bottom:20px}
-    .actions{display:flex;gap:12px;flex-wrap:wrap}
+    .field{margin-bottom:14px}
+    .field label{display:block;font-size:12px;font-weight:700;color:#01696F;text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;font-family:Arial,sans-serif}
+    .field input{width:100%;box-sizing:border-box;padding:10px 12px;border:1px solid #d4ede8;border-radius:6px;font-family:Georgia,serif;font-size:14px;color:#333}
+    .field input:focus{outline:none;border-color:#01696F}
+    .hint{font-size:12px;color:#888;margin-top:4px;font-family:Arial,sans-serif}
+    .actions{display:flex;gap:12px;flex-wrap:wrap;margin-top:8px}
     .btn-send{background:#01696F;color:#fff;border:none;padding:14px 32px;border-radius:6px;font-size:15px;font-weight:700;cursor:pointer;font-family:Arial,sans-serif}
     .btn-send:hover{background:#015a5f}
     .btn-cancel{background:#fff;color:#01696F;border:2px solid #01696F;padding:14px 24px;border-radius:6px;font-size:15px;font-weight:700;cursor:pointer;font-family:Arial,sans-serif;text-decoration:none;display:inline-block}
@@ -308,6 +331,17 @@ app.get('/edit', (req, res) => {
           <strong>Subject:</strong> ${escapeHtml(subject || '')}
         </div>
 
+        <div class="field">
+          <label for="cc-input">CC (optional)</label>
+          <input type="text" id="cc-input" value="${escapeHtml(cc || '')}" placeholder="name@example.com, other@example.com" autocomplete="off">
+          <div class="hint">Comma-separated. Recipients see these addresses.</div>
+        </div>
+        <div class="field">
+          <label for="bcc-input">BCC (optional)</label>
+          <input type="text" id="bcc-input" value="${escapeHtml(bcc || '')}" placeholder="name@example.com, other@example.com" autocomplete="off">
+          <div class="hint">Comma-separated. Hidden from recipients.</div>
+        </div>
+
         <label>Edit Response</label>
         <div class="editor-wrap">
           <textarea id="draft-editor"></textarea>
@@ -325,6 +359,8 @@ app.get('/edit', (req, res) => {
   <form id="edit-form" method="POST" action="/edit/send" style="display:none">
     ${allParams}
     <input type="hidden" name="draft" id="form-draft">
+    <input type="hidden" name="cc" id="form-cc">
+    <input type="hidden" name="bcc" id="form-bcc">
   </form>
 
   <script>
@@ -364,6 +400,8 @@ app.get('/edit', (req, res) => {
       const editor = tinymce.get('draft-editor');
       const content = editor ? editor.getContent() : '';
       document.getElementById('form-draft').value = content;
+      document.getElementById('form-cc').value = document.getElementById('cc-input').value.trim();
+      document.getElementById('form-bcc').value = document.getElementById('bcc-input').value.trim();
       document.getElementById('edit-form').submit();
     }
   </script>
