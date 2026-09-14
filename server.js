@@ -1,4 +1,5 @@
 const express = require('express');
+const { Pool } = require('pg');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
@@ -11,6 +12,67 @@ const WEBHOOKS = {
   '10b': process.env.ZAP_10B_WEBHOOK || 'https://hooks.zapier.com/hooks/catch/25149853/ujis74a/',
   '1b':  process.env.ZAP_1B_WEBHOOK  || 'https://hooks.zapier.com/hooks/catch/25149853/uvbkrhj/'
 };
+
+// --- Approval locking (Postgres) ---------------------------------------
+// Railway's Postgres plugin injects DATABASE_URL automatically once the
+// plugin is attached to this service. Locally / without a DB attached,
+// pool is null and locking is skipped (fails open) so the app still runs.
+const pool = process.env.DATABASE_URL
+  ? new Pool({
+      connectionString: process.env.DATABASE_URL,
+      ssl: { rejectUnauthorized: false }
+    })
+  : null;
+
+if (!pool) {
+  console.warn('DATABASE_URL not set — approval locking is disabled (links will not be locked after use).');
+}
+
+async function ensureSchema() {
+  if (!pool) return;
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS approvals (
+      approval_id   TEXT PRIMARY KEY,
+      status        TEXT NOT NULL DEFAULT 'pending',
+      sender_email  TEXT,
+      sender_name   TEXT,
+      subject       TEXT,
+      approved_at   TIMESTAMPTZ,
+      created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+  `);
+}
+ensureSchema().catch(err => console.error('Failed to initialize approvals table:', err));
+
+// Returns { status: 'pending' | 'approved', approved_at } or
+// { status: 'pending' } when locking is disabled (no DB attached).
+async function getApprovalStatus(approvalId) {
+  if (!pool || !approvalId) return { status: 'pending' };
+  const { rows } = await pool.query(
+    'SELECT status, approved_at FROM approvals WHERE approval_id = $1',
+    [approvalId]
+  );
+  if (!rows.length) return { status: 'pending' };
+  return { status: rows[0].status, approved_at: rows[0].approved_at };
+}
+
+// Atomically claims the approval_id for sending. Returns true if this call
+// won the race (first send) and false if it was already approved.
+// Uses an upsert with a WHERE guard so two simultaneous clicks can't both win.
+async function claimApproval(approvalId, meta) {
+  if (!pool || !approvalId) return true; // fail open when locking is disabled
+  const { sender_email, sender_name, subject } = meta || {};
+  const result = await pool.query(
+    `INSERT INTO approvals (approval_id, status, sender_email, sender_name, subject, approved_at)
+     VALUES ($1, 'approved', $2, $3, $4, now())
+     ON CONFLICT (approval_id)
+       DO UPDATE SET status = 'approved', approved_at = now()
+       WHERE approvals.status <> 'approved'
+     RETURNING approval_id`,
+    [approvalId, sender_email || null, sender_name || null, subject || null]
+  );
+  return result.rowCount > 0;
+}
 
 function escapeHtml(value) {
   return String(value || '')
@@ -160,16 +222,68 @@ const CONFIRMATION_HTML = (sender_name, sender_email, subject) => `<!DOCTYPE htm
 </body>
 </html>`;
 
+// Shown when a link is reopened after it has already been used to send.
+const ALREADY_APPROVED_HTML = (sender_name, sender_email, subject, approvedAt) => `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Already Sent - The Poultry Doc</title>
+  <style>
+    body{margin:0;background:#f0f4f4;font-family:Georgia,serif;display:flex;align-items:center;justify-content:center;min-height:100vh}
+    .card{background:#fff;border-radius:10px;box-shadow:0 2px 12px rgba(0,0,0,.1);max-width:480px;width:90%;overflow:hidden}
+    .hdr{background:#01696F;padding:28px;text-align:center}
+    .hdr img{max-width:180px;display:block;margin:0 auto 10px}
+    .hdr p{color:rgba(255,255,255,.85);margin:0;font-size:13px}
+    .div{background:#F5C842;height:4px}
+    .bod{padding:36px;text-align:center}
+    .ic{font-size:52px;color:#888;margin-bottom:12px}
+    h2{color:#01696F;margin:0 0 10px;font-size:21px}
+    p{color:#555;font-size:14px;line-height:1.6;margin:0}
+    .detail{background:#f0f7f7;border-radius:6px;padding:16px;margin-top:20px;text-align:left;font-size:14px;color:#444}
+    .detail strong{color:#01696F}
+    .ftr{background:#01696F;padding:14px;text-align:center}
+    .ftr p{color:rgba(255,255,255,.7);font-size:12px;margin:0}
+    .ftr a{color:#F5C842;text-decoration:none}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="hdr">
+      <img src="https://thepoultrydoc.wpenginepowered.com/wp-content/uploads/2026/04/TPD-new-logo-lg-ctp-1.png" alt="The Poultry Doc">
+      <p>Veterinary Consultation for Backyard Flocks</p>
+    </div>
+    <div class="div"></div>
+    <div class="bod">
+      <div class="ic">&#128274;</div>
+      <h2>Already Sent</h2>
+      <p>This response was already approved and sent. This link has been used and can't be actioned again.</p>
+      <div class="detail">
+        <strong>Sent to:</strong> ${escapeHtml(sender_name || sender_email)} &lt;${escapeHtml(sender_email)}&gt;<br>
+        <strong>Subject:</strong> ${escapeHtml(subject || '')}<br>
+        ${approvedAt ? `<strong>Sent at:</strong> ${escapeHtml(new Date(approvedAt).toLocaleString('en-US', { timeZone: 'America/Chicago', dateStyle: 'medium', timeStyle: 'short' }))} CT` : ''}
+      </div>
+    </div>
+    <div class="ftr"><p>The Poultry Doc &mdash; <a href="https://www.thepoultrydoc.com">www.thepoultrydoc.com</a></p></div>
+  </div>
+</body>
+</html>`;
+
 app.get('/', (req, res) => {
   res.send('TPD Approve is running.');
 });
 
 // Approve -- show confirmation page (prevents email scanner double-fire)
-app.get('/approve', (req, res) => {
+app.get('/approve', async (req, res) => {
   const { approval_id, sender_email, sender_name, subject, cc, bcc } = req.query;
 
   if (!approval_id || !sender_email) {
     return res.status(400).send('<h2>Invalid link</h2>');
+  }
+
+  const existing = await getApprovalStatus(approval_id).catch(() => ({ status: 'pending' }));
+  if (existing.status === 'approved') {
+    return res.send(ALREADY_APPROVED_HTML(sender_name, sender_email, subject, existing.approved_at));
   }
 
   // Hidden inputs for everything EXCEPT cc/bcc (those become visible text inputs)
@@ -251,6 +365,18 @@ app.post('/approve/confirm', async (req, res) => {
     return res.status(400).send('<h2>Invalid submission</h2>');
   }
 
+  // Atomically claim this approval_id. If someone already sent it (double
+  // click, second reviewer with the same link, etc.) this returns false and
+  // we short-circuit before firing the webhook again.
+  const won = await claimApproval(approval_id, { sender_email, sender_name, subject }).catch(err => {
+    console.error('claimApproval error:', err);
+    return true; // fail open on DB errors so a send is never silently swallowed
+  });
+  if (!won) {
+    const existing = await getApprovalStatus(approval_id).catch(() => ({ status: 'approved' }));
+    return res.send(ALREADY_APPROVED_HTML(sender_name, sender_email, subject, existing.approved_at));
+  }
+
   const zapKey = zap || '10b';
   const webhook = WEBHOOKS[zapKey] || WEBHOOKS['10b'];
 
@@ -265,11 +391,16 @@ app.post('/approve/confirm', async (req, res) => {
 });
 
 // Edit page -- show editable draft with TinyMCE
-app.get('/edit', (req, res) => {
+app.get('/edit', async (req, res) => {
   const { approval_id, sender_email, sender_name, subject, draft, thread_id, message_id, zap, cc, bcc } = req.query;
 
   if (!approval_id || !sender_email) {
     return res.status(400).send('<h2>Invalid link</h2>');
+  }
+
+  const existing = await getApprovalStatus(approval_id).catch(() => ({ status: 'pending' }));
+  if (existing.status === 'approved') {
+    return res.send(ALREADY_APPROVED_HTML(sender_name, sender_email, subject, existing.approved_at));
   }
 
   // Convert plain text draft to HTML (handles URLs as centered buttons)
@@ -415,6 +546,15 @@ app.post('/edit/send', async (req, res) => {
 
   if (!approval_id || !sender_email) {
     return res.status(400).send('<h2>Invalid submission</h2>');
+  }
+
+  const won = await claimApproval(approval_id, { sender_email, sender_name, subject }).catch(err => {
+    console.error('claimApproval error:', err);
+    return true; // fail open on DB errors so a send is never silently swallowed
+  });
+  if (!won) {
+    const existing = await getApprovalStatus(approval_id).catch(() => ({ status: 'approved' }));
+    return res.send(ALREADY_APPROVED_HTML(sender_name, sender_email, subject, existing.approved_at));
   }
 
   const zapKey = zap || '10b';
