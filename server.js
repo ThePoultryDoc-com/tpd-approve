@@ -1,5 +1,8 @@
 const express = require('express');
 const { Pool } = require('pg');
+const multer = require('multer');
+const { google } = require('googleapis');
+const { Readable } = require('stream');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
@@ -12,6 +15,87 @@ const WEBHOOKS = {
   '10b': process.env.ZAP_10B_WEBHOOK || 'https://hooks.zapier.com/hooks/catch/25149853/ujis74a/',
   '1b':  process.env.ZAP_1B_WEBHOOK  || 'https://hooks.zapier.com/hooks/catch/25149853/uvbkrhj/'
 };
+
+// --- Attachment upload (Drive via service account) ----------------------
+// Vets attach a file on the /edit page. We hold it in memory (no disk write
+// on Railway's ephemeral filesystem), push it to a shared Drive folder using
+// a service account, and forward the resulting shareable link to Zapier
+// instead of raw bytes (webhook payload is a URL-encoded query string and
+// can't carry binary content).
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024 } // 10MB cap per TPD's stated attachment sizes
+});
+
+const ATTACHMENTS_FOLDER_ID = process.env.ATTACHMENTS_FOLDER_ID || '1P9yoDTJtSHBTgw3zkcgdSt6IvqvYD01T'; // "TPD Approve - Email Attachments"
+
+let driveClient = null;
+function getDriveClient() {
+  if (driveClient) return driveClient;
+  const rawKey = process.env.GOOGLE_SERVICE_ACCOUNT_KEY;
+  if (!rawKey) {
+    console.warn('GOOGLE_SERVICE_ACCOUNT_KEY not set — attachment upload is disabled.');
+    return null;
+  }
+  let credentials;
+  try {
+    credentials = JSON.parse(rawKey);
+  } catch (e) {
+    console.error('GOOGLE_SERVICE_ACCOUNT_KEY is not valid JSON:', e.message);
+    return null;
+  }
+  const auth = new google.auth.GoogleAuth({
+    credentials,
+    scopes: ['https://www.googleapis.com/auth/drive.file']
+  });
+  driveClient = google.drive({ version: 'v3', auth });
+  return driveClient;
+}
+
+// Uploads a single multer file buffer to the shared Drive folder and returns
+// a shareable link. Throws on failure — callers decide how to degrade.
+async function uploadAttachmentToDrive(file) {
+  const drive = getDriveClient();
+  if (!drive) throw new Error('Drive client not configured (missing service account key)');
+
+  const fileMetadata = {
+    name: file.originalname,
+    parents: [ATTACHMENTS_FOLDER_ID]
+  };
+  const media = {
+    mimeType: file.mimetype,
+    body: Readable.from(file.buffer)
+  };
+
+  const created = await drive.files.create({
+    requestBody: fileMetadata,
+    media,
+    fields: 'id, name, webViewLink, webContentLink'
+  });
+
+  const fileId = created.data.id;
+
+  // Make it readable via link so Zapier's "Download File" step (unauthenticated
+  // fetch) can retrieve it. Folder-level sharing with the service account only
+  // covers write access for the service account itself, not read access for
+  // arbitrary link visitors, so this per-file permission is still required.
+  await drive.permissions.create({
+    fileId,
+    requestBody: { role: 'reader', type: 'anyone' }
+  });
+
+  // webContentLink is a direct-download URL — what we want for Zapier to fetch
+  // raw bytes. Fall back to constructing it if the API didn't return one.
+  const downloadUrl = created.data.webContentLink
+    || `https://drive.google.com/uc?id=${fileId}&export=download`;
+
+  return {
+    id: fileId,
+    name: created.data.name,
+    url: downloadUrl,
+    viewUrl: created.data.webViewLink
+  };
+}
 
 // --- Approval locking (Postgres) ---------------------------------------
 // Railway's Postgres plugin injects DATABASE_URL automatically once the
@@ -177,7 +261,7 @@ function draftToHtml(draft) {
   }).filter(Boolean).join('\n');
 }
 
-const CONFIRMATION_HTML = (sender_name, sender_email, subject) => `<!DOCTYPE html>
+const CONFIRMATION_HTML = (sender_name, sender_email, subject, warning = '') => `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -216,6 +300,7 @@ const CONFIRMATION_HTML = (sender_name, sender_email, subject) => `<!DOCTYPE htm
         <strong>Sent to:</strong> ${escapeHtml(sender_name || sender_email)} &lt;${escapeHtml(sender_email)}&gt;<br>
         <strong>Subject:</strong> ${escapeHtml(subject || '')}
       </div>
+      ${warning ? `<p style="margin-top:16px;color:#a15c00;font-size:13px;">${escapeHtml(warning)}</p>` : ''}
     </div>
     <div class="ftr"><p>The Poultry Doc &mdash; <a href="https://www.thepoultrydoc.com">www.thepoultrydoc.com</a></p></div>
   </div>
@@ -472,6 +557,11 @@ app.get('/edit', async (req, res) => {
           <input type="text" id="bcc-input" value="${escapeHtml(bcc || '')}" placeholder="name@example.com, other@example.com" autocomplete="off">
           <div class="hint">Comma-separated. Hidden from recipients.</div>
         </div>
+        <div class="field">
+          <label for="attachment-input">Attachment (optional)</label>
+          <input type="file" id="attachment-input" name="attachment" form="edit-form" accept=".pdf,.doc,.docx,.jpg,.jpeg,.png">
+          <div class="hint">PDF, Word doc, or image, up to 10MB. Sent as a file attachment on the email.</div>
+        </div>
 
         <label>Edit Response</label>
         <div class="editor-wrap">
@@ -487,7 +577,7 @@ app.get('/edit', async (req, res) => {
     </div>
   </div>
 
-  <form id="edit-form" method="POST" action="/edit/send" style="display:none">
+  <form id="edit-form" method="POST" action="/edit/send" enctype="multipart/form-data" style="display:none">
     ${allParams}
     <input type="hidden" name="draft" id="form-draft">
     <input type="hidden" name="cc" id="form-cc">
@@ -540,8 +630,8 @@ app.get('/edit', async (req, res) => {
 </html>`);
 });
 
-// Handle edited form submission
-app.post('/edit/send', async (req, res) => {
+// Handle edited form submission (multipart -- may include an attachment file)
+app.post('/edit/send', upload.single('attachment'), async (req, res) => {
   const { approval_id, sender_email, sender_name, subject, zap } = req.body;
 
   if (!approval_id || !sender_email) {
@@ -560,14 +650,50 @@ app.post('/edit/send', async (req, res) => {
   const zapKey = zap || '10b';
   const webhook = WEBHOOKS[zapKey] || WEBHOOKS['10b'];
 
+  // If the vet attached a file, push it to Drive first and forward the link.
+  // Never block the send on an attachment failure -- log it and let the email
+  // go out without the attachment rather than silently dropping the whole reply.
+  let attachmentUrl = '';
+  let attachmentName = '';
+  let attachmentError = '';
+  if (req.file) {
+    try {
+      const uploaded = await uploadAttachmentToDrive(req.file);
+      attachmentUrl = uploaded.url;
+      attachmentName = uploaded.name;
+    } catch (e) {
+      console.error('Attachment upload error:', e);
+      attachmentError = 'attachment_failed';
+    }
+  }
+
   try {
-    const params = new URLSearchParams(req.body);
+    const payload = { ...req.body };
+    if (attachmentUrl) {
+      payload.attachment_url = attachmentUrl;
+      payload.attachment_name = attachmentName;
+    }
+    if (attachmentError) {
+      payload.attachment_error = attachmentError;
+    }
+    const params = new URLSearchParams(payload);
     await fetch(webhook + '?' + params);
   } catch(e) {
     console.error('Webhook error:', e);
   }
 
-  res.send(CONFIRMATION_HTML(sender_name, sender_email, subject));
+  res.send(CONFIRMATION_HTML(sender_name, sender_email, subject, attachmentError ? 'Note: the attached file could not be uploaded, so this email was sent without it.' : ''));
+});
+
+// Multer errors (e.g. file too large) land here instead of the route handler
+app.use((err, req, res, next) => {
+  if (err && err.name === 'MulterError') {
+    if (err.code === 'LIMIT_FILE_SIZE') {
+      return res.status(400).send('<h2>Attachment too large</h2><p>Please attach a file under 10MB and try again.</p>');
+    }
+    return res.status(400).send(`<h2>Attachment error</h2><p>${escapeHtml(err.message)}</p>`);
+  }
+  next(err);
 });
 
 app.listen(PORT, () => console.log('TPD Approve running on port', PORT));
