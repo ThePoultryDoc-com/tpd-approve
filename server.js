@@ -27,7 +27,7 @@ const upload = multer({
   limits: { fileSize: 10 * 1024 * 1024 } // 10MB cap per TPD's stated attachment sizes
 });
 
-const ATTACHMENTS_FOLDER_ID = process.env.ATTACHMENTS_FOLDER_ID || '1P9yoDTJtSHBTgw3zkcgdSt6IvqvYD01T'; // "TPD Approve - Email Attachments"
+const ATTACHMENTS_FOLDER_ID = process.env.ATTACHMENTS_FOLDER_ID || '10u-k4lYwOH5nn9cWiklkSc1FFXSCzn06'; // "Email Attachments" folder inside the Business Ops Shared Drive
 
 let driveClient = null;
 function getDriveClient() {
@@ -70,7 +70,8 @@ async function uploadAttachmentToDrive(file) {
   const created = await drive.files.create({
     requestBody: fileMetadata,
     media,
-    fields: 'id, name, webViewLink, webContentLink'
+    fields: 'id, name, webViewLink, webContentLink',
+    supportsAllDrives: true
   });
 
   const fileId = created.data.id;
@@ -81,7 +82,8 @@ async function uploadAttachmentToDrive(file) {
   // arbitrary link visitors, so this per-file permission is still required.
   await drive.permissions.create({
     fileId,
-    requestBody: { role: 'reader', type: 'anyone' }
+    requestBody: { role: 'reader', type: 'anyone' },
+    supportsAllDrives: true
   });
 
   // webContentLink is a direct-download URL — what we want for Zapier to fetch
