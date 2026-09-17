@@ -619,13 +619,39 @@ app.get('/edit', async (req, res) => {
       }
     });
 
-    function submitEdit() {
+    async function submitEdit() {
+      const btn = document.querySelector('.btn-send');
+      if (btn) { btn.disabled = true; btn.textContent = 'Sending...'; }
+
       const editor = tinymce.get('draft-editor');
       const content = editor ? editor.getContent() : '';
-      document.getElementById('form-draft').value = content;
-      document.getElementById('form-cc').value = document.getElementById('cc-input').value.trim();
-      document.getElementById('form-bcc').value = document.getElementById('bcc-input').value.trim();
-      document.getElementById('edit-form').submit();
+
+      // Build FormData by hand instead of relying on the file input's
+      // form="edit-form" association + form.submit() -- that pairing is
+      // spec-legal but has proven unreliable in practice (the attachment
+      // silently failed to ride along). Grabbing the file directly here
+      // guarantees it's included.
+      const formEl = document.getElementById('edit-form');
+      const fd = new FormData(formEl);
+      fd.set('draft', content);
+      fd.set('cc', document.getElementById('cc-input').value.trim());
+      fd.set('bcc', document.getElementById('bcc-input').value.trim());
+
+      const fileInput = document.getElementById('attachment-input');
+      if (fileInput && fileInput.files && fileInput.files[0]) {
+        fd.set('attachment', fileInput.files[0]);
+      }
+
+      try {
+        const res = await fetch(formEl.action, { method: 'POST', body: fd });
+        const html = await res.text();
+        document.open();
+        document.write(html);
+        document.close();
+      } catch (e) {
+        if (btn) { btn.disabled = false; btn.textContent = 'Send Edited Response'; }
+        alert('Send failed: ' + e.message + ' -- please try again.');
+      }
     }
   </script>
 </body>
