@@ -191,8 +191,11 @@ function draftToHtml(draft) {
 
   // Strip bold formatting (HTML tags and markdown) so the salutation is never bolded.
   // Conservative: only targets <strong>/<b> and **...** / __...__ -- leaves italics alone.
+  // NOTE: 'a' was previously included in this alternation, which stripped every <a>/</a>
+  // tag (including href) from the draft before rendering on /edit -- silently dropping
+  // every link/button. Fixed 2026-09-17.
   draft = draft
-    .replace(/<\/?(strong|b|a)(\s[^>]*)?>/gi, '')
+    .replace(/<\/?(strong|b)(\s[^>]*)?>/gi, '')
     .replace(/\*\*([\s\S]*?)\*\*/g, '$1')
     .replace(/__([\s\S]*?)__/g, '$1');
 
