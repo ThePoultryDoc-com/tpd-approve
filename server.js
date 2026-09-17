@@ -423,7 +423,7 @@ app.get('/approve', async (req, res) => {
         <strong>To:</strong> ${escapeHtml(sender_name || sender_email)} &lt;${escapeHtml(sender_email)}&gt;<br>
         <strong>Subject:</strong> ${escapeHtml(subject || 'Your inquiry')}
       </div>
-      <form method="POST" action="/approve/confirm">
+      <form method="POST" action="/approve/confirm" enctype="multipart/form-data">
         ${hiddenInputs}
         <div class="field">
           <label for="cc">CC (optional)</label>
@@ -435,6 +435,11 @@ app.get('/approve', async (req, res) => {
           <input type="text" id="bcc" name="bcc" value="${escapeHtml(bcc || '')}" placeholder="name@example.com, other@example.com" autocomplete="off">
           <div class="hint">Comma-separated. Hidden from recipients.</div>
         </div>
+        <div class="field">
+          <label for="attachment">Attachment (optional)</label>
+          <input type="file" id="attachment" name="attachment" accept=".pdf,.doc,.docx,.jpg,.jpeg,.png">
+          <div class="hint">PDF, Word doc, or image, up to 10MB. Sent as a file attachment on the email.</div>
+        </div>
         <button type="submit" class="btn">Confirm and Send to Client</button>
       </form>
     </div>
@@ -444,8 +449,10 @@ app.get('/approve', async (req, res) => {
 </html>`);
 });
 
-// Approve confirm -- fires webhook after vet clicks confirm button
-app.post('/approve/confirm', async (req, res) => {
+// Approve confirm -- fires webhook after vet clicks confirm button. Accepts
+// the same optional attachment as /edit/send since this is the link vets use
+// most often -- attaching a file shouldn't require going through /edit.
+app.post('/approve/confirm', upload.single('attachment'), async (req, res) => {
   const { approval_id, sender_email, sender_name, subject, zap } = req.body;
 
   if (!approval_id || !sender_email) {
@@ -467,14 +474,38 @@ app.post('/approve/confirm', async (req, res) => {
   const zapKey = zap || '10b';
   const webhook = WEBHOOKS[zapKey] || WEBHOOKS['10b'];
 
+  // Same attachment handling as /edit/send: never block the send on an
+  // upload failure -- log it and let the email go out without it.
+  let attachmentUrl = '';
+  let attachmentName = '';
+  let attachmentError = '';
+  if (req.file) {
+    try {
+      const uploaded = await uploadAttachmentToDrive(req.file);
+      attachmentUrl = uploaded.url;
+      attachmentName = uploaded.name;
+    } catch (e) {
+      console.error('Attachment upload error:', e);
+      attachmentError = 'attachment_failed';
+    }
+  }
+
   try {
-    const params = new URLSearchParams(req.body);
+    const payload = { ...req.body };
+    if (attachmentUrl) {
+      payload.attachment_url = attachmentUrl;
+      payload.attachment_name = attachmentName;
+    }
+    if (attachmentError) {
+      payload.attachment_error = attachmentError;
+    }
+    const params = new URLSearchParams(payload);
     await fetch(webhook + '?' + params);
   } catch(e) {
     console.error('Webhook error:', e);
   }
 
-  res.send(CONFIRMATION_HTML(sender_name, sender_email, subject));
+  res.send(CONFIRMATION_HTML(sender_name, sender_email, subject, attachmentError ? 'Note: the attached file could not be uploaded, so this email was sent without it.' : ''));
 });
 
 // Edit page -- show editable draft with TinyMCE
